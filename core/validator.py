@@ -71,8 +71,32 @@ SCHEMA_STANDARDS = {
         "required": ["target"],
         "recommended": ["query-input"],
         "types": {
-            "target": str,
-            "query-input": str,
+            "target": (str, dict),
+            "query-input": (str, dict),
+        },
+        "nested": {},
+    },
+    "ReadAction": {
+        "required": ["target"],
+        "recommended": [],
+        "types": {
+            "target": (str, list, dict),
+        },
+        "nested": {},
+    },
+    "EntryPoint": {
+        "required": ["urlTemplate"],
+        "recommended": [],
+        "types": {
+            "urlTemplate": str,
+        },
+        "nested": {},
+    },
+    "PropertyValueSpecification": {
+        "required": ["valueName"],
+        "recommended": [],
+        "types": {
+            "valueName": str,
         },
         "nested": {},
     },
@@ -83,6 +107,16 @@ SCHEMA_STANDARDS = {
             "name": str,
             "url": str,
             "potentialAction": (dict, list),
+        },
+        "nested": {},
+    },
+    "WebPage": {
+        "required": ["name"],
+        "recommended": ["description", "url"],
+        "types": {
+            "name": str,
+            "description": str,
+            "url": str,
         },
         "nested": {},
     },
@@ -164,6 +198,16 @@ SCHEMA_STANDARDS = {
             "itemListElement": list,
             "name": str,
             "numberOfItems": int,
+        },
+        "nested": {},
+    },
+    "ListItem": {
+        "required": ["position", "item"],
+        "recommended": ["name"],
+        "types": {
+            "position": int,
+            "item": str,
+            "name": str,
         },
         "nested": {},
     },

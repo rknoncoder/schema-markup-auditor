@@ -11,7 +11,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 
-def _flatten_schema_data(schema_data: Any) -> List[Dict[str, Any]]:
+def _flatten_schema_data(
+    schema_data: Any,
+    inherited_context: Any = None,
+) -> List[Dict[str, Any]]:
     """
     Normalize JSON-LD into individual schema objects.
 
@@ -20,25 +23,47 @@ def _flatten_schema_data(schema_data: Any) -> List[Dict[str, Any]]:
     """
     if isinstance(schema_data, list):
         flattened: List[Dict[str, Any]] = []
+        current_context = inherited_context
         for item in schema_data:
-            flattened.extend(_flatten_schema_data(item))
+            if isinstance(item, dict) and item.get("@context"):
+                current_context = item["@context"]
+            flattened.extend(_flatten_schema_data(item, current_context))
         return flattened
 
     if not isinstance(schema_data, dict):
         return []
 
+    current_context = schema_data.get("@context") or inherited_context
     schemas = []
     if "@type" in schema_data:
-        schemas.append(schema_data)
+        schemas.append(_with_inherited_context(schema_data, current_context))
 
     graph = schema_data.get("@graph")
     if isinstance(graph, list):
         for item in graph:
-            schemas.extend(_flatten_schema_data(item))
-    elif "@type" not in schema_data:
-        schemas.append(schema_data)
+            schemas.extend(_flatten_schema_data(item, current_context))
+    elif "@type" not in schema_data and _has_schema_payload(schema_data):
+        schemas.append(_with_inherited_context(schema_data, current_context))
 
     return schemas
+
+
+def _with_inherited_context(
+    schema: Dict[str, Any],
+    inherited_context: Any,
+) -> Dict[str, Any]:
+    """Attach a parent JSON-LD context to flattened child schema blocks."""
+    if not inherited_context or "@context" in schema:
+        return schema
+
+    schema_with_context = dict(schema)
+    schema_with_context["@context"] = inherited_context
+    return schema_with_context
+
+
+def _has_schema_payload(schema_data: Dict[str, Any]) -> bool:
+    """Ignore metadata-only JSON-LD containers while preserving real objects."""
+    return any(not key.startswith("@") for key in schema_data)
 
 
 def extract_json_ld(html_content: str) -> List[Dict[str, Any]]:

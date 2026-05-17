@@ -65,6 +65,24 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(len(Extractor.filter_by_type(schemas, "Article")), 1)
         self.assertEqual(len(Extractor.filter_by_type(schemas, "BreadcrumbList")), 1)
 
+    def test_extract_json_ld_passes_graph_context_to_flattened_nodes(self):
+        html = """
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {"@type": "Organization", "name": "Acme", "url": "https://example.com"},
+                    {"@type": "WebSite", "name": "Acme", "url": "https://example.com"}
+                ]
+            }
+        </script>
+        """
+
+        schemas = extract_json_ld(html)
+
+        self.assertEqual([schema["@type"] for schema in schemas], ["Organization", "WebSite"])
+        self.assertTrue(all(schema.get("@context") == "https://schema.org" for schema in schemas))
+
     def test_extract_microdata_finds_schema_org_organization(self):
         html = """
         <link rel="canonical" href="https://triprindia.com/">
@@ -134,6 +152,11 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIn("ImageObject", SCHEMA_STANDARDS)
         self.assertIn("ContactPoint", SCHEMA_STANDARDS)
         self.assertIn("SearchAction", SCHEMA_STANDARDS)
+        self.assertIn("ReadAction", SCHEMA_STANDARDS)
+        self.assertIn("WebPage", SCHEMA_STANDARDS)
+        self.assertIn("ListItem", SCHEMA_STANDARDS)
+        self.assertIn("EntryPoint", SCHEMA_STANDARDS)
+        self.assertIn("PropertyValueSpecification", SCHEMA_STANDARDS)
         self.assertIn("ProductGroup", SCHEMA_STANDARDS)
         self.assertIn("Organization", SCHEMA_STANDARDS)
         self.assertIn("Product", SCHEMA_STANDARDS)
@@ -148,7 +171,149 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIs(SCHEMA_STANDARDS["Answer"]["types"]["text"], str)
         self.assertIs(SCHEMA_STANDARDS["ImageObject"]["types"]["contentUrl"], str)
         self.assertIs(SCHEMA_STANDARDS["ContactPoint"]["types"]["telephone"], str)
-        self.assertIs(SCHEMA_STANDARDS["SearchAction"]["types"]["target"], str)
+        self.assertEqual(SCHEMA_STANDARDS["SearchAction"]["types"]["target"], (str, dict))
+        self.assertIs(SCHEMA_STANDARDS["WebPage"]["types"]["name"], str)
+        self.assertIs(SCHEMA_STANDARDS["ListItem"]["types"]["position"], int)
+        self.assertIs(SCHEMA_STANDARDS["EntryPoint"]["types"]["urlTemplate"], str)
+        self.assertIs(SCHEMA_STANDARDS["PropertyValueSpecification"]["types"]["valueName"], str)
+
+    def test_read_action_accepts_flexible_target_shapes(self):
+        string_target_schema = {
+            "@context": "https://schema.org",
+            "@type": "ReadAction",
+            "target": "https://example.com/blog/how-to-audit-schema",
+        }
+        list_target_schema = {
+            "@context": "https://schema.org",
+            "@type": "ReadAction",
+            "target": ["https://example.com/blog/how-to-audit-schema"],
+        }
+        dict_target_schema = {
+            "@context": "https://schema.org",
+            "@type": "ReadAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://example.com/blog/how-to-audit-schema",
+            },
+        }
+        missing_target_schema = {
+            "@context": "https://schema.org",
+            "@type": "ReadAction",
+        }
+
+        string_target_rows = deep_audit(string_target_schema)
+        list_target_rows = deep_audit(list_target_schema)
+        dict_target_rows = deep_audit(dict_target_schema)
+        missing_target_rows = deep_audit(missing_target_schema)
+
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in string_target_rows))
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in list_target_rows))
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in dict_target_rows))
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "target"
+                for row in missing_target_rows
+            )
+        )
+
+    def test_web_page_requires_name(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "WebPage",
+            "name": "About us",
+            "description": "Agency about page.",
+            "url": "https://example.com/about",
+        }
+        missing_name_schema = {
+            "@context": "https://schema.org",
+            "@type": "WebPage",
+            "url": "https://example.com/about",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_name_rows = deep_audit(missing_name_schema)
+
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "name"
+                for row in missing_name_rows
+            )
+        )
+
+    def test_list_item_requires_position_and_item(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "ListItem",
+            "position": 1,
+            "item": "https://example.com/services",
+            "name": "Services",
+        }
+        missing_item_schema = {
+            "@context": "https://schema.org",
+            "@type": "ListItem",
+            "position": 1,
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_item_rows = deep_audit(missing_item_schema)
+
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "item"
+                for row in missing_item_rows
+            )
+        )
+
+    def test_entry_point_requires_url_template(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "EntryPoint",
+            "urlTemplate": "https://example.com/search?q={search_term_string}",
+        }
+        missing_url_template_schema = {
+            "@context": "https://schema.org",
+            "@type": "EntryPoint",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_url_template_rows = deep_audit(missing_url_template_schema)
+
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "urlTemplate"
+                for row in missing_url_template_rows
+            )
+        )
+
+    def test_property_value_specification_requires_value_name(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "PropertyValueSpecification",
+            "valueName": "search_term_string",
+        }
+        missing_value_name_schema = {
+            "@context": "https://schema.org",
+            "@type": "PropertyValueSpecification",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_value_name_rows = deep_audit(missing_value_name_schema)
+
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "valueName"
+                for row in missing_value_name_rows
+            )
+        )
 
     def test_contact_point_requires_telephone_and_contact_type(self):
         valid_schema = {
@@ -199,6 +364,28 @@ class SchemaStandardAuditTests(unittest.TestCase):
                 and row["property"] == "target"
                 for row in missing_target_rows
             )
+        )
+
+    def test_search_action_accepts_nested_target_and_query_input(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "SearchAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://example.com/search?q={search_term_string}",
+            },
+            "query-input": {
+                "@type": "PropertyValueSpecification",
+                "valueName": "search_term_string",
+            },
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in rows))
+        self.assertTrue(any(row["schema_type"] == "EntryPoint" for row in rows))
+        self.assertTrue(
+            any(row["schema_type"] == "PropertyValueSpecification" for row in rows)
         )
 
     def test_image_object_accepts_content_url_or_url(self):
@@ -497,6 +684,41 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertEqual(rows[0]["schema_type"], "LocalBusiness")
         self.assertEqual(rows[0]["severity"], "Valid")
         self.assertEqual(rows[0]["schema_path"], "$[0].@graph[0]")
+
+    def test_audit_schema_uses_inherited_context_for_nested_graph_blocks(self):
+        html = """
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {
+                        "@type": "WebSite",
+                        "name": "Example",
+                        "url": "https://example.com",
+                        "potentialAction": {
+                            "@type": "SearchAction",
+                            "target": {
+                                "@type": "EntryPoint",
+                                "urlTemplate": "https://example.com/search?q={search_term_string}"
+                            },
+                            "query-input": {
+                                "@type": "PropertyValueSpecification",
+                                "valueName": "search_term_string"
+                            }
+                        }
+                    }
+                ]
+            }
+        </script>
+        """
+
+        rows = audit_schema(extract_json_ld(html))
+
+        self.assertFalse(any(row["issue_type"] == "Invalid Context" for row in rows))
+        self.assertTrue(any(row["schema_type"] == "EntryPoint" for row in rows))
+        self.assertTrue(
+            any(row["schema_type"] == "PropertyValueSpecification" for row in rows)
+        )
 
     def test_page_expectations_define_required_schema_types(self):
         self.assertEqual(PAGE_EXPECTATIONS["homepage"], ["Organization", "WebSite"])
