@@ -6,7 +6,7 @@ This module contains target URLs, required schema types, and timeout configurati
 
 # Target URLs to audit
 TARGET_URLS = [
-    # Add your URLs here
+    "https://triprindia.com/collections/t-shirt",
     # Example: "https://example.com",
 ]
 
