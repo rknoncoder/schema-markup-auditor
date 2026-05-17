@@ -57,6 +57,25 @@ SCHEMA_STANDARDS = {
         },
         "nested": {},
     },
+    "ContactPoint": {
+        "required": ["telephone", "contactType"],
+        "recommended": ["areaServed", "availableLanguage", "email"],
+        "types": {
+            "telephone": str,
+            "contactType": str,
+            "email": str,
+        },
+        "nested": {},
+    },
+    "SearchAction": {
+        "required": ["target"],
+        "recommended": ["query-input"],
+        "types": {
+            "target": str,
+            "query-input": str,
+        },
+        "nested": {},
+    },
     "WebSite": {
         "required": ["name", "url"],
         "recommended": ["potentialAction"],

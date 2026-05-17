@@ -132,6 +132,8 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIn("Answer", SCHEMA_STANDARDS)
         self.assertIn("Brand", SCHEMA_STANDARDS)
         self.assertIn("ImageObject", SCHEMA_STANDARDS)
+        self.assertIn("ContactPoint", SCHEMA_STANDARDS)
+        self.assertIn("SearchAction", SCHEMA_STANDARDS)
         self.assertIn("ProductGroup", SCHEMA_STANDARDS)
         self.assertIn("Organization", SCHEMA_STANDARDS)
         self.assertIn("Product", SCHEMA_STANDARDS)
@@ -145,6 +147,59 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIs(SCHEMA_STANDARDS["Offer"]["types"]["price"], float)
         self.assertIs(SCHEMA_STANDARDS["Answer"]["types"]["text"], str)
         self.assertIs(SCHEMA_STANDARDS["ImageObject"]["types"]["contentUrl"], str)
+        self.assertIs(SCHEMA_STANDARDS["ContactPoint"]["types"]["telephone"], str)
+        self.assertIs(SCHEMA_STANDARDS["SearchAction"]["types"]["target"], str)
+
+    def test_contact_point_requires_telephone_and_contact_type(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "ContactPoint",
+            "telephone": "+91-0000000000",
+            "contactType": "customer support",
+            "email": "support@example.com",
+        }
+        missing_contact_type_schema = {
+            "@context": "https://schema.org",
+            "@type": "ContactPoint",
+            "telephone": "+91-0000000000",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_contact_type_rows = deep_audit(missing_contact_type_schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in valid_rows))
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "contactType"
+                for row in missing_contact_type_rows
+            )
+        )
+
+    def test_search_action_requires_target(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "SearchAction",
+            "target": "https://example.com/search?q={search_term_string}",
+            "query-input": "required name=search_term_string",
+        }
+        missing_target_schema = {
+            "@context": "https://schema.org",
+            "@type": "SearchAction",
+            "query-input": "required name=search_term_string",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_target_rows = deep_audit(missing_target_schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in valid_rows))
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "target"
+                for row in missing_target_rows
+            )
+        )
 
     def test_image_object_accepts_content_url_or_url(self):
         content_url_schema = {
