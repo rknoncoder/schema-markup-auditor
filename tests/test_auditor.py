@@ -14,7 +14,7 @@ from core.validator import (
     audit_schema,
     deep_audit,
 )
-from main import USER_AGENT, _infer_page_type, run_audit
+from main import USER_AGENT, _infer_page_type, extract_storefront_node, run_audit
 
 
 class ExtractorTests(unittest.TestCase):
@@ -149,6 +149,7 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIn("Question", SCHEMA_STANDARDS)
         self.assertIn("Answer", SCHEMA_STANDARDS)
         self.assertIn("Brand", SCHEMA_STANDARDS)
+        self.assertIn("AggregateRating", SCHEMA_STANDARDS)
         self.assertIn("ImageObject", SCHEMA_STANDARDS)
         self.assertIn("ContactPoint", SCHEMA_STANDARDS)
         self.assertIn("SearchAction", SCHEMA_STANDARDS)
@@ -157,10 +158,12 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIn("ListItem", SCHEMA_STANDARDS)
         self.assertIn("EntryPoint", SCHEMA_STANDARDS)
         self.assertIn("PropertyValueSpecification", SCHEMA_STANDARDS)
+        self.assertIn("PropertyValue", SCHEMA_STANDARDS)
         self.assertIn("ProductGroup", SCHEMA_STANDARDS)
         self.assertIn("Organization", SCHEMA_STANDARDS)
         self.assertIn("Product", SCHEMA_STANDARDS)
         self.assertIn("Offer", SCHEMA_STANDARDS)
+        self.assertIn("AggregateOffer", SCHEMA_STANDARDS)
         self.assertIn("Article", SCHEMA_STANDARDS)
         self.assertIn("CollectionPage", SCHEMA_STANDARDS)
         self.assertIn("LocalBusiness", SCHEMA_STANDARDS)
@@ -168,7 +171,9 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIs(SCHEMA_STANDARDS["Organization"]["types"]["name"], str)
         self.assertIs(SCHEMA_STANDARDS["Product"]["types"]["name"], str)
         self.assertIs(SCHEMA_STANDARDS["Offer"]["types"]["price"], float)
+        self.assertEqual(SCHEMA_STANDARDS["AggregateOffer"]["types"]["lowPrice"], (str, int, float))
         self.assertIs(SCHEMA_STANDARDS["Answer"]["types"]["text"], str)
+        self.assertEqual(SCHEMA_STANDARDS["AggregateRating"]["types"]["ratingValue"], (str, int, float))
         self.assertIs(SCHEMA_STANDARDS["ImageObject"]["types"]["contentUrl"], str)
         self.assertIs(SCHEMA_STANDARDS["ContactPoint"]["types"]["telephone"], str)
         self.assertEqual(SCHEMA_STANDARDS["SearchAction"]["types"]["target"], (str, dict))
@@ -176,6 +181,7 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIs(SCHEMA_STANDARDS["ListItem"]["types"]["position"], int)
         self.assertIs(SCHEMA_STANDARDS["EntryPoint"]["types"]["urlTemplate"], str)
         self.assertIs(SCHEMA_STANDARDS["PropertyValueSpecification"]["types"]["valueName"], str)
+        self.assertIs(SCHEMA_STANDARDS["PropertyValue"]["types"]["name"], str)
 
     def test_read_action_accepts_flexible_target_shapes(self):
         string_target_schema = {
@@ -312,6 +318,32 @@ class SchemaStandardAuditTests(unittest.TestCase):
                 row["severity"] == "Critical Error"
                 and row["property"] == "valueName"
                 for row in missing_value_name_rows
+            )
+        )
+
+    def test_property_value_requires_name_and_value(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "PropertyValue",
+            "name": "Material",
+            "value": "Cotton",
+        }
+        missing_value_schema = {
+            "@context": "https://schema.org",
+            "@type": "PropertyValue",
+            "name": "Material",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_value_rows = deep_audit(missing_value_schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in valid_rows))
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "value"
+                for row in missing_value_rows
             )
         )
 
@@ -514,6 +546,397 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["schema_type"], "Brand")
         self.assertEqual(rows[0]["severity"], "Valid")
+
+    def test_aggregate_rating_accepts_review_count_or_rating_count(self):
+        review_count_schema = {
+            "@context": "https://schema.org",
+            "@type": "AggregateRating",
+            "ratingValue": "4.6",
+            "reviewCount": "1,245",
+            "bestRating": 5,
+            "worstRating": 1,
+        }
+        rating_count_schema = {
+            "@context": "https://schema.org",
+            "@type": "AggregateRating",
+            "ratingValue": 4.6,
+            "ratingCount": 1245,
+            "bestRating": "5",
+            "worstRating": "1",
+        }
+
+        review_count_rows = deep_audit(review_count_schema)
+        rating_count_rows = deep_audit(rating_count_schema)
+
+        self.assertFalse(
+            any(row["issue_type"] == "Unsupported Schema Type" for row in review_count_rows)
+        )
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in review_count_rows))
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in rating_count_rows))
+
+    def test_aggregate_rating_requires_review_count_or_rating_count(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "AggregateRating",
+            "ratingValue": 4.6,
+            "bestRating": 5,
+            "worstRating": 1,
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "reviewCount or ratingCount"
+                for row in rows
+            )
+        )
+
+    def test_product_recurses_into_aggregate_rating(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": "Nobero tee",
+            "description": "A product with rating markup.",
+            "image": "https://example.com/tee.jpg",
+            "sku": "TEE-001",
+            "brand": "Nobero",
+            "offers": {
+                "@type": "Offer",
+                "price": "999",
+                "priceCurrency": "INR",
+                "availability": "https://schema.org/InStock",
+                "url": "https://example.com/products/tee",
+                "itemCondition": "https://schema.org/NewCondition",
+                "seller": "Nobero",
+                "priceValidUntil": "2026-12-31",
+            },
+            "aggregateRating": {
+                "@type": "AggregateRating",
+                "ratingValue": "4.8",
+                "ratingCount": "240",
+                "bestRating": "5",
+                "worstRating": "1",
+            },
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in rows))
+        self.assertTrue(
+            any(
+                row["schema_type"] == "AggregateRating"
+                and row["severity"] == "Valid"
+                for row in rows
+            )
+        )
+
+    def test_aggregate_offer_requires_low_price_and_currency(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "AggregateOffer",
+            "lowPrice": "499",
+            "priceCurrency": "INR",
+            "highPrice": 999,
+            "offerCount": "8",
+        }
+        missing_low_price_schema = {
+            "@context": "https://schema.org",
+            "@type": "AggregateOffer",
+            "priceCurrency": "INR",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_low_price_rows = deep_audit(missing_low_price_schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in valid_rows))
+        self.assertFalse(any(row["severity"] == "Critical Error" for row in valid_rows))
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "lowPrice"
+                for row in missing_low_price_rows
+            )
+        )
+
+    def test_product_accepts_aggregate_offer_as_pricing_schema(self):
+        schemas = [
+            {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Aggregate priced tee",
+                "description": "A product with aggregate pricing.",
+                "image": "https://example.com/tee.jpg",
+                "sku": "TEE-AGG",
+                "brand": "Example",
+                "offers": {
+                    "@type": "AggregateOffer",
+                    "lowPrice": "499",
+                    "priceCurrency": "INR",
+                    "highPrice": "999",
+                    "offerCount": 8,
+                },
+            }
+        ]
+
+        completeness_rows = audit_page_completeness("product", schemas)
+        audit_rows = audit_schema(schemas, page_type="product")
+
+        self.assertEqual(completeness_rows, [])
+        self.assertFalse(
+            any(
+                row["issue_type"] == "Missing Required Schema"
+                and row["schema_type"] == "Offer or AggregateOffer"
+                for row in audit_rows
+            )
+        )
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in audit_rows))
+
+    def test_product_flags_misplaced_root_pricing_property(self):
+        schemas = [
+            {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Snitch shirt",
+                "description": "A product with misplaced pricing data.",
+                "image": "https://example.com/shirt.jpg",
+                "sku": "SHIRT-ROOT",
+                "brand": "Snitch",
+                "highPrice": "1999",
+                "offers": {
+                    "@type": "Offer",
+                    "price": "999",
+                    "priceCurrency": "INR",
+                    "availability": "https://schema.org/InStock",
+                    "url": "https://example.com/products/shirt",
+                    "itemCondition": "https://schema.org/NewCondition",
+                    "seller": "Snitch",
+                    "priceValidUntil": "2026-12-31",
+                },
+            }
+        ]
+
+        rows = audit_schema(schemas, page_type="product")
+        deep_rows = deep_audit(schemas[0])
+
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[0]"
+                and row["schema_type"] == "Product"
+                and row["severity"] == "Critical Error"
+                and row["issue_type"] == "Invalid Property Placement"
+                and row["property"] == "highPrice"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$"
+                and row["schema_type"] == "Product"
+                and row["severity"] == "Critical Error"
+                and row["issue_type"] == "Invalid Property Placement"
+                and row["property"] == "highPrice"
+                for row in deep_rows
+            )
+        )
+
+    def test_product_accepts_optional_merchandising_properties(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": "Snitch shirt",
+            "description": "A shirt with fashion merchandising metadata.",
+            "image": "https://example.com/shirt.jpg",
+            "sku": "SHIRT-META",
+            "brand": "Snitch",
+            "url": "https://example.com/products/shirt",
+            "productID": "gid://shopify/Product/123",
+            "category": "Shirts",
+            "color": "Black",
+            "material": "Cotton",
+            "pattern": "Solid",
+            "size": "M",
+            "offers": {
+                "@type": "Offer",
+                "price": "999",
+                "priceCurrency": "INR",
+                "availability": "https://schema.org/InStock",
+                "url": "https://example.com/products/shirt",
+                "itemCondition": "https://schema.org/NewCondition",
+                "seller": "Snitch",
+                "priceValidUntil": "2026-12-31",
+            },
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(
+            any(
+                row["issue_type"] == "Unrecognized Property"
+                and row["property"] in {"productID", "category", "color", "material", "pattern", "size"}
+                for row in rows
+            )
+        )
+
+    def test_product_root_valid_row_stays_visible_with_nested_offer_issues(self):
+        schemas = [
+            {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Snitch shirt",
+                "description": "A product shell with a child offer issue.",
+                "image": "https://example.com/shirt.jpg",
+                "sku": "SHIRT-SHELL",
+                "brand": "Snitch",
+                "offers": {
+                    "@type": "Offer",
+                    "price": "999",
+                    "priceCurrency": "INR",
+                    "availability": "https://schema.org/InStock",
+                    "url": "https://example.com/products/shirt",
+                    "itemCondition": "https://schema.org/NewCondition",
+                    "seller": "Snitch",
+                    "highPrice": "1999",
+                },
+            }
+        ]
+
+        rows = audit_schema(schemas, page_type="product")
+
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[0]"
+                and row["schema_type"] == "Product"
+                and row["severity"] == "Valid"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[0].offers"
+                and row["property"] == "highPrice"
+                for row in rows
+            )
+        )
+
+    def test_product_group_accepts_optional_merchandising_properties(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "ProductGroup",
+            "name": "Solid black shirts",
+            "description": "A product group with fashion metadata.",
+            "url": "https://example.com/products/solid-black-shirt",
+            "productGroupID": "solid-black-shirt",
+            "productID": "gid://shopify/ProductGroup/123",
+            "category": "Shirts",
+            "color": ["Black"],
+            "material": "Cotton",
+            "pattern": "Solid",
+            "size": ["S", "M", "L"],
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(
+            any(
+                row["issue_type"] == "Unrecognized Property"
+                and row["property"] in {"productID", "category", "color", "material", "pattern", "size"}
+                for row in rows
+            )
+        )
+
+    def test_product_group_root_valid_row_stays_visible_with_variant_issues(self):
+        schemas = [
+            {
+                "@context": "https://schema.org",
+                "@type": "ProductGroup",
+                "name": "Solid black shirts",
+                "description": "A clean product group shell with child variant issues.",
+                "url": "https://example.com/products/solid-black-shirt",
+                "variesBy": "size",
+                "hasVariant": [
+                    {
+                        "@type": "Product",
+                        "name": "Solid black shirt - M",
+                        "description": "Medium solid black shirt.",
+                        "image": "https://example.com/shirt.jpg",
+                        "sku": "SHIRT-M",
+                        "brand": "Snitch",
+                        "offers": {
+                            "@type": "Offer",
+                            "price": "999",
+                            "priceCurrency": "INR",
+                            "availability": "https://schema.org/InStock",
+                        },
+                    }
+                ],
+            }
+        ]
+
+        rows = audit_schema(schemas, page_type="product")
+
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[0]"
+                and row["schema_type"] == "ProductGroup"
+                and row["severity"] == "Valid"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["schema_path"].startswith("$[0].hasVariant")
+                and row["severity"] in {"Warning", "Critical Error"}
+                for row in rows
+            )
+        )
+
+    def test_product_recurses_into_additional_property_values(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": "Snitch shirt",
+            "description": "A shirt with additional product metadata.",
+            "image": "https://example.com/shirt.jpg",
+            "sku": "SHIRT-001",
+            "brand": "Snitch",
+            "offers": {
+                "@type": "Offer",
+                "price": "999",
+                "priceCurrency": "INR",
+                "availability": "https://schema.org/InStock",
+                "url": "https://example.com/products/shirt",
+                "itemCondition": "https://schema.org/NewCondition",
+                "seller": "Snitch",
+                "priceValidUntil": "2026-12-31",
+            },
+            "additionalProperty": [
+                {
+                    "@type": "PropertyValue",
+                    "name": "Fit",
+                    "value": "Regular",
+                },
+                {
+                    "@type": "PropertyValue",
+                    "name": "Sleeve",
+                    "value": "Full sleeve",
+                },
+                {
+                    "@type": "PropertyValue",
+                    "name": "Pattern",
+                    "value": "Solid",
+                },
+            ],
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in rows))
+        self.assertEqual(
+            sum(row["schema_type"] == "PropertyValue" for row in rows),
+            3,
+        )
 
     def test_product_group_accepts_product_group_id_without_unknown_warning(self):
         schema = {
@@ -722,7 +1145,7 @@ class SchemaStandardAuditTests(unittest.TestCase):
 
     def test_page_expectations_define_required_schema_types(self):
         self.assertEqual(PAGE_EXPECTATIONS["homepage"], ["Organization", "WebSite"])
-        self.assertEqual(PAGE_EXPECTATIONS["product"], ["Product", "Offer"])
+        self.assertEqual(PAGE_EXPECTATIONS["product"], ["Product", ("Offer", "AggregateOffer")])
         self.assertEqual(PAGE_EXPECTATIONS["collection"], ["ItemList", "BreadcrumbList"])
 
     def test_audit_page_completeness_flags_missing_schema_blocks(self):
@@ -916,6 +1339,34 @@ class SchemaStandardAuditTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_extract_storefront_node_finds_nested_product_group(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "WebPage",
+            "name": "Nested Shopify product page",
+            "mainEntity": {
+                "@type": "ProductGroup",
+                "name": "Nested tee variants",
+                "hasVariant": [
+                    {
+                        "@type": "Product",
+                        "name": "Nested tee small",
+                        "offers": {
+                            "@type": "Offer",
+                            "price": "999",
+                            "priceCurrency": "INR",
+                            "availability": "https://schema.org/InStock",
+                        },
+                    }
+                ],
+            },
+        }
+
+        storefront_node = extract_storefront_node(schema)
+
+        self.assertEqual(storefront_node["@type"], "ProductGroup")
+        self.assertEqual(storefront_node["@context"], "https://schema.org")
+
     def test_run_audit_fetches_extracts_validates_and_writes_csv(self):
         class FakeResponse:
             text = """
@@ -959,6 +1410,314 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn("Organization", set(report_data["schema_type"]))
         self.assertGreaterEqual(len(report_data), 1)
 
+    def test_run_audit_preserves_variant_query_string(self):
+        class FakeResponse:
+            text = """
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Product",
+                    "name": "Variant tee",
+                    "description": "A variant-specific product payload.",
+                    "image": "https://example.com/tee.jpg",
+                    "sku": "TEE-VARIANT",
+                    "brand": "Nobero",
+                    "offers": {
+                        "@type": "Offer",
+                        "price": "999",
+                        "priceCurrency": "INR",
+                        "availability": "https://schema.org/InStock",
+                        "url": "https://example.com/products/tee?variant=37699714121894",
+                        "itemCondition": "https://schema.org/NewCondition",
+                        "seller": "Nobero",
+                        "priceValidUntil": "2026-12-31"
+                    }
+                }
+            </script>
+            """
+
+            def raise_for_status(self):
+                return None
+
+        target_url = "https://example.com/products/tee?variant=37699714121894"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.requests.get", return_value=FakeResponse()) as request_mock:
+                    with redirect_stdout(io.StringIO()):
+                        report_data = run_audit(target_url)
+
+            report_path = (
+                Path(tmpdir)
+                / "example.com_products_tee_variant=37699714121894_schema_audit.csv"
+            )
+
+            self.assertTrue(report_path.exists())
+
+        request_mock.assert_called_once()
+        self.assertEqual(request_mock.call_args.args[0], target_url)
+        self.assertTrue(all(report_data["url"] == target_url))
+
+    def test_run_audit_keeps_root_schema_path_issue_rows(self):
+        class FakeResponse:
+            text = """
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Product",
+                    "name": "Snitch shirt",
+                    "description": "A product with misplaced pricing data.",
+                    "image": "https://example.com/shirt.jpg",
+                    "sku": "SHIRT-ROOT",
+                    "brand": "Snitch",
+                    "highPrice": "1999",
+                    "offers": {
+                        "@type": "Offer",
+                        "price": "999",
+                        "priceCurrency": "INR",
+                        "availability": "https://schema.org/InStock",
+                        "url": "https://example.com/products/shirt",
+                        "itemCondition": "https://schema.org/NewCondition",
+                        "seller": "Snitch",
+                        "priceValidUntil": "2026-12-31"
+                    }
+                }
+            </script>
+            """
+
+            def raise_for_status(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.requests.get", return_value=FakeResponse()):
+                    with redirect_stdout(io.StringIO()):
+                        report_data = run_audit("https://example.com/products/snitch-shirt")
+
+            report_path = Path(tmpdir) / "example.com_products_snitch-shirt_schema_audit.csv"
+            report_text = report_path.read_text(encoding="utf-8")
+
+        root_issue_rows = report_data[
+            (report_data["schema_path"] == "$[0]")
+            & (report_data["schema_type"] == "Product")
+            & (report_data["property"] == "highPrice")
+        ]
+
+        self.assertEqual(len(root_issue_rows), 1)
+        self.assertEqual(root_issue_rows.iloc[0]["issue_type"], "Invalid Property Placement")
+        self.assertIn("$[0],Product,Critical Error,Invalid Property Placement,highPrice", report_text)
+
+    def test_run_audit_writes_executive_summary_before_csv_rows(self):
+        class FakeResponse:
+            text = """
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Organization",
+                    "name": "Summary Store",
+                    "url": "https://example.com/about",
+                    "logo": "https://example.com/logo.svg",
+                    "sameAs": ["https://instagram.com/summarystore"],
+                    "description": "A fully configured organization schema."
+                }
+            </script>
+            """
+
+            def raise_for_status(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.requests.get", return_value=FakeResponse()):
+                    with redirect_stdout(io.StringIO()):
+                        run_audit("https://example.com/about")
+
+            report_path = Path(tmpdir) / "example.com_about_schema_audit.csv"
+            report_text = report_path.read_text(encoding="utf-8")
+
+        self.assertTrue(
+            report_text.startswith(
+                "# --------------------------------------------------\n"
+                "# SCHEMA AUDIT EXECUTIVE SUMMARY\n"
+                "# Total Schemas Detected: 1\n"
+                "# Total Fully Valid Blocks: 1\n"
+                "# Total Warnings Found: 0\n"
+                "# Total Critical Errors Found: 0\n"
+                "# --------------------------------------------------\n"
+            )
+        )
+        self.assertIn("url,schema_path,schema_type,severity", report_text)
+
+    def test_run_audit_uses_headless_crawler_when_enabled(self):
+        rendered_html = """
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "Organization",
+                "name": "Rendered Store",
+                "url": "https://example.com",
+                "logo": "https://example.com/logo.svg",
+                "sameAs": ["https://instagram.com/renderedstore"],
+                "description": "Schema injected after JavaScript rendering."
+            }
+        </script>
+        """
+        target_url = "https://example.com/products/rendered-tee?variant=123"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.USE_HEADLESS_BROWSER", True):
+                    with patch("main.Crawler") as crawler_mock:
+                        with patch("main.requests.get") as request_mock:
+                            crawler_instance = crawler_mock.return_value
+                            crawler_instance.fetch.return_value = rendered_html
+
+                            with redirect_stdout(io.StringIO()):
+                                report_data = run_audit(target_url)
+
+        crawler_mock.assert_called_once_with(
+            timeout=30,
+            use_playwright=True,
+            max_retries=3,
+        )
+        crawler_instance.fetch.assert_called_once_with(target_url)
+        request_mock.assert_not_called()
+        self.assertIn("Organization", set(report_data["schema_type"]))
+        self.assertTrue(all(report_data["url"] == target_url))
+
+    def test_product_audit_keeps_root_organization_and_website_schemas(self):
+        class FakeResponse:
+            text = """
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Organization",
+                    "name": "Nobero",
+                    "url": "https://nobero.com/",
+                    "logo": "https://nobero.com/logo.svg",
+                    "sameAs": ["https://instagram.com/noberodotcom"],
+                    "description": "Pratyaya E-commerce"
+                }
+            </script>
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "WebSite",
+                    "name": "Nobero",
+                    "url": "https://nobero.com/"
+                }
+            </script>
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "Product",
+                    "name": "Nobero tee",
+                    "description": "A product page payload.",
+                    "image": "https://nobero.com/tee.jpg",
+                    "brand": "Nobero",
+                    "offers": {
+                        "@type": "Offer",
+                        "price": "999",
+                        "priceCurrency": "INR",
+                        "availability": "https://schema.org/InStock",
+                        "url": "https://nobero.com/products/tee",
+                        "itemCondition": "https://schema.org/NewCondition",
+                        "seller": "Nobero",
+                        "priceValidUntil": "2026-12-31"
+                    }
+                }
+            </script>
+            """
+
+            def raise_for_status(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.requests.get", return_value=FakeResponse()):
+                    with redirect_stdout(io.StringIO()):
+                        report_data = run_audit("https://nobero.com/products/tee")
+
+        schema_types = set(report_data["schema_type"])
+
+        self.assertIn("Organization", schema_types)
+        self.assertIn("WebSite", schema_types)
+        self.assertIn("Product", schema_types)
+
+    def test_run_audit_groups_nested_storefront_variants_on_ambiguous_product_url(self):
+        class FakeResponse:
+            text = """
+            <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "WebPage",
+                    "name": "Nested product landing page",
+                    "mainEntity": {
+                        "@type": "ProductGroup",
+                        "name": "Trip tee variants",
+                        "description": "Trip tee variations.",
+                        "url": "https://example.com/pages/trip-tee",
+                        "variesBy": "size",
+                        "hasVariant": [
+                            {
+                                "@type": "Product",
+                                "name": "Trip tee small",
+                                "description": "Small tee.",
+                                "image": "https://example.com/small.jpg",
+                                "sku": "TRIP-S",
+                                "brand": "Tripr",
+                                "offers": {
+                                    "@type": "Offer",
+                                    "price": "999",
+                                    "priceCurrency": "INR",
+                                    "availability": "https://schema.org/InStock",
+                                    "url": "https://example.com/pages/trip-tee?variant=s",
+                                    "seller": "Tripr"
+                                }
+                            },
+                            {
+                                "@type": "Product",
+                                "name": "Trip tee large",
+                                "description": "Large tee.",
+                                "image": "https://example.com/large.jpg",
+                                "sku": "TRIP-L",
+                                "brand": "Tripr",
+                                "offers": {
+                                    "@type": "Offer",
+                                    "price": "999",
+                                    "priceCurrency": "INR",
+                                    "availability": "https://schema.org/InStock",
+                                    "url": "https://example.com/pages/trip-tee?variant=l",
+                                    "seller": "Tripr"
+                                }
+                            }
+                        ]
+                    }
+                }
+            </script>
+            """
+
+            def raise_for_status(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("main.REPORTS_DIR", Path(tmpdir)):
+                with patch("main.requests.get", return_value=FakeResponse()):
+                    with redirect_stdout(io.StringIO()):
+                        report_data = run_audit("https://example.com/pages/trip-tee")
+
+        grouped_rows = report_data[
+            report_data["issue_type"] == "Grouped Product Variant Warning"
+        ]
+
+        self.assertEqual(set(grouped_rows["property"]), {"itemCondition", "priceValidUntil"})
+        self.assertTrue(
+            all(
+                "all 2 product variant variations" in message
+                for message in grouped_rows["message"]
+            )
+        )
+
     def test_infer_page_type_from_url_path(self):
         self.assertEqual(_infer_page_type("https://triprindia.com"), "homepage")
         self.assertEqual(_infer_page_type("https://triprindia.com/"), "homepage")
@@ -969,6 +1728,19 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(
             _infer_page_type("https://triprindia.com/collections/tshirts"),
             "collection",
+        )
+        self.assertEqual(
+            _infer_page_type(
+                "https://example.com/pages/trip-tee",
+                [
+                    {
+                        "@context": "https://schema.org",
+                        "@type": "WebPage",
+                        "about": {"@type": "Product", "name": "Trip tee"},
+                    }
+                ],
+            ),
+            "product",
         )
 
 

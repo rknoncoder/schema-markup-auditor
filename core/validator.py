@@ -46,6 +46,19 @@ SCHEMA_STANDARDS = {
         },
         "nested": {},
     },
+    "AggregateRating": {
+        "required": ["ratingValue"],
+        "required_any": [["reviewCount", "ratingCount"]],
+        "recommended": ["bestRating", "worstRating"],
+        "types": {
+            "ratingValue": (str, int, float),
+            "reviewCount": (str, int, float),
+            "ratingCount": (str, int, float),
+            "bestRating": (str, int, float),
+            "worstRating": (str, int, float),
+        },
+        "nested": {},
+    },
     "ImageObject": {
         "required": [],
         "required_any": [["contentUrl", "url"]],
@@ -63,7 +76,10 @@ SCHEMA_STANDARDS = {
         "types": {
             "telephone": str,
             "contactType": str,
+            "areaServed": (str, list),
+            "availableLanguage": (str, list),
             "email": str,
+            "contactOption": (str, list),
         },
         "nested": {},
     },
@@ -100,6 +116,15 @@ SCHEMA_STANDARDS = {
         },
         "nested": {},
     },
+    "PropertyValue": {
+        "required": ["name", "value"],
+        "recommended": [],
+        "types": {
+            "name": str,
+            "value": (str, int, float, bool),
+        },
+        "nested": {},
+    },
     "WebSite": {
         "required": ["name", "url"],
         "recommended": ["potentialAction"],
@@ -117,6 +142,9 @@ SCHEMA_STANDARDS = {
             "name": str,
             "description": str,
             "url": str,
+            "about": (dict, list),
+            "breadcrumb": (dict, list),
+            "mainEntity": (dict, list),
         },
         "nested": {},
     },
@@ -126,11 +154,15 @@ SCHEMA_STANDARDS = {
         "types": {
             "name": str,
             "url": str,
+            "alternateName": str,
             "logo": (str, dict, list),
             "sameAs": (str, list),
             "description": str,
+            "contactPoint": (dict, list),
         },
-        "nested": {},
+        "nested": {
+            "contactPoint": "ContactPoint",
+        },
     },
     "ProductGroup": {
         "required": ["name"],
@@ -140,6 +172,12 @@ SCHEMA_STANDARDS = {
             "name": str,
             "hasVariant": (dict, list),
             "productGroupID": str,
+            "productID": str,
+            "category": (str, list),
+            "color": (str, list),
+            "material": (str, list),
+            "pattern": (str, list),
+            "size": (str, list),
             "description": str,
             "url": str,
             "variesBy": (str, list),
@@ -157,10 +195,21 @@ SCHEMA_STANDARDS = {
             "image": (str, list),
             "sku": str,
             "brand": (str, dict),
+            "url": str,
+            "productID": str,
+            "category": (str, list),
+            "color": (str, list),
+            "material": (str, list),
+            "pattern": (str, list),
+            "size": (str, list),
             "offers": (dict, list),
+            "aggregateRating": dict,
+            "additionalProperty": (dict, list),
         },
         "nested": {
             "offers": "Offer",
+            "aggregateRating": "AggregateRating",
+            "additionalProperty": "PropertyValue",
         },
     },
     "Offer": {
@@ -176,6 +225,20 @@ SCHEMA_STANDARDS = {
             "priceValidUntil": str,
         },
         "nested": {},
+    },
+    "AggregateOffer": {
+        "required": ["lowPrice", "priceCurrency"],
+        "recommended": ["highPrice", "offerCount", "offers"],
+        "types": {
+            "lowPrice": (str, int, float),
+            "priceCurrency": str,
+            "highPrice": (str, int, float),
+            "offerCount": (str, int, float),
+            "offers": (dict, list),
+        },
+        "nested": {
+            "offers": "Offer",
+        },
     },
     "Article": {
         "required": ["headline", "datePublished", "author"],
@@ -249,9 +312,21 @@ SCHEMA_STANDARDS = {
 
 PAGE_EXPECTATIONS = {
     "homepage": ["Organization", "WebSite"],
-    "product": ["Product", "Offer"],
+    "product": ["Product", ("Offer", "AggregateOffer")],
     "collection": ["ItemList", "BreadcrumbList"],
 }
+
+
+MISPLACED_PROPERTY_HINTS = {
+    "Product": {
+        "highPrice": "AggregateOffer",
+        "lowPrice": "AggregateOffer",
+        "offerCount": "AggregateOffer",
+    },
+}
+
+
+MAJOR_STATUS_SCHEMA_TYPES = {"Product", "ProductGroup"}
 
 
 def audit_schema(
@@ -314,23 +389,26 @@ def audit_page_completeness(
     expected_schema_types = PAGE_EXPECTATIONS.get(page_type.lower(), [])
     detected_schema_types = _collect_schema_types(detected_schemas)
     missing_schema_types = [
-        schema_type
-        for schema_type in expected_schema_types
-        if schema_type not in detected_schema_types
+        schema_expectation
+        for schema_expectation in expected_schema_types
+        if not _schema_expectation_met(schema_expectation, detected_schema_types)
     ]
 
     return [
         _audit_row(
             path="$",
-            schema_type=schema_type,
+            schema_type=_format_schema_expectation(schema_expectation),
             severity="Critical Error",
             issue_type="Missing Required Schema",
             field="@type",
-            expected=schema_type,
+            expected=_format_schema_expectation(schema_expectation),
             actual="missing",
-            message=f"{page_type} pages require a {schema_type} schema block.",
+            message=(
+                f"{page_type} pages require a "
+                f"{_format_schema_expectation(schema_expectation)} schema block."
+            ),
         )
-        for schema_type in missing_schema_types
+        for schema_expectation in missing_schema_types
     ]
 
 
@@ -388,12 +466,13 @@ def _audit_schema_item(
 
     context = schema_item.get("@context", inherited_context)
     schema_type = _resolve_schema_type(schema_item, expected_type)
+    graph_rows: List[Dict[str, Any]] = []
 
     if "@graph" in schema_item:
         graph = schema_item.get("@graph")
         if isinstance(graph, list):
             for index, graph_item in enumerate(graph):
-                rows.extend(
+                graph_rows.extend(
                     _audit_schema_item(
                         graph_item,
                         path=f"{path}.@graph[{index}]",
@@ -402,7 +481,7 @@ def _audit_schema_item(
                     )
                 )
         else:
-            rows.append(
+            graph_rows.append(
                 _audit_row(
                     path=path,
                     schema_type=_display_schema_type(schema_type),
@@ -416,8 +495,8 @@ def _audit_schema_item(
             )
 
     if schema_type == "Unknown" and "@type" not in schema_item:
-        if rows:
-            return rows
+        if graph_rows:
+            return graph_rows
         return [
             _audit_row(
                 path=path,
@@ -431,8 +510,9 @@ def _audit_schema_item(
             )
         ]
 
+    self_rows: List[Dict[str, Any]] = []
     if not _is_schema_org_context(context):
-        rows.append(
+        self_rows.append(
             _audit_row(
                 path=path,
                 schema_type=_display_schema_type(schema_type),
@@ -447,7 +527,7 @@ def _audit_schema_item(
 
     standard = SCHEMA_STANDARDS.get(schema_type)
     if not standard:
-        rows.append(
+        self_rows.append(
             _audit_row(
                 path=path,
                 schema_type=_display_schema_type(schema_type),
@@ -459,24 +539,19 @@ def _audit_schema_item(
                 message="No structural standard is configured for this schema type.",
             )
         )
-        return rows
+        return graph_rows + self_rows
 
-    rows.extend(_audit_properties(schema_item, path, schema_type, standard))
-    rows.extend(_audit_nested_schemas(schema_item, path, context, standard))
+    self_rows.extend(_audit_properties(schema_item, path, schema_type, standard))
+    nested_rows = _audit_nested_schemas(schema_item, path, context, standard)
+    rows = graph_rows + self_rows
+
+    if _should_emit_parent_valid_row(schema_type, self_rows, nested_rows):
+        rows.append(_valid_schema_row(path, schema_type))
+
+    rows.extend(nested_rows)
 
     if not rows:
-        rows.append(
-            _audit_row(
-                path=path,
-                schema_type=schema_type,
-                severity="Valid",
-                issue_type="Valid",
-                field="",
-                expected="",
-                actual="",
-                message="Schema passed configured structural checks.",
-            )
-        )
+        rows.append(_valid_schema_row(path, schema_type))
 
     return rows
 
@@ -575,7 +650,80 @@ def _audit_properties(
                 )
             )
 
+    rows.extend(
+        _audit_unrecognized_properties(
+            schema_item=schema_item,
+            path=path,
+            schema_type=schema_type,
+            standard=standard,
+        )
+    )
+
     return rows
+
+
+def _audit_unrecognized_properties(
+    schema_item: Dict[str, Any],
+    path: str,
+    schema_type: str,
+    standard: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    known_fields = _known_schema_fields(standard)
+    misplaced_hints = MISPLACED_PROPERTY_HINTS.get(schema_type, {})
+
+    for field, value in schema_item.items():
+        if field.startswith("@") or field in known_fields:
+            continue
+
+        expected_owner = misplaced_hints.get(field)
+        if expected_owner:
+            rows.append(
+                _audit_row(
+                    path=path,
+                    schema_type=schema_type,
+                    severity="Critical Error",
+                    issue_type="Invalid Property Placement",
+                    field=field,
+                    expected=f"{expected_owner} property",
+                    actual=f"{schema_type} property",
+                    message=(
+                        f"Property '{field}' is not valid on {schema_type}; "
+                        f"move it under {expected_owner}."
+                    ),
+                )
+            )
+            continue
+
+        rows.append(
+            _audit_row(
+                path=path,
+                schema_type=schema_type,
+                severity="Warning",
+                issue_type="Unrecognized Property",
+                field=field,
+                expected=f"Configured {schema_type} property",
+                actual=type(value).__name__,
+                message=(
+                    f"Property '{field}' is not configured for {schema_type}; "
+                    "verify it belongs on this schema type or add it to SCHEMA_STANDARDS."
+                ),
+            )
+        )
+
+    return rows
+
+
+def _known_schema_fields(standard: Dict[str, Any]) -> set:
+    known_fields = set(standard.get("types", {}))
+    known_fields.update(standard.get("nested", {}))
+    known_fields.update(standard.get("required", []))
+    known_fields.update(standard.get("recommended", []))
+
+    for field_group in standard.get("required_any", []):
+        known_fields.update(field_group)
+
+    return known_fields
 
 
 def _audit_nested_schemas(
@@ -649,6 +797,54 @@ def _audit_row(
     }
 
 
+def _valid_schema_row(path: str, schema_type: str) -> Dict[str, Any]:
+    return _audit_row(
+        path=path,
+        schema_type=schema_type,
+        severity="Valid",
+        issue_type="Valid",
+        field="",
+        expected="",
+        actual="",
+        message="Schema passed configured structural checks.",
+    )
+
+
+def _should_emit_parent_valid_row(
+    schema_type: str,
+    self_rows: List[Dict[str, Any]],
+    nested_rows: List[Dict[str, Any]],
+) -> bool:
+    return (
+        schema_type in MAJOR_STATUS_SCHEMA_TYPES
+        and not self_rows
+        and bool(nested_rows)
+    )
+
+
+def _schema_expectation_met(schema_expectation: Any, detected_schema_types: set) -> bool:
+    if isinstance(schema_expectation, str):
+        return schema_expectation in detected_schema_types
+
+    if isinstance(schema_expectation, (list, tuple, set)):
+        return any(
+            schema_type in detected_schema_types
+            for schema_type in schema_expectation
+        )
+
+    return False
+
+
+def _format_schema_expectation(schema_expectation: Any) -> str:
+    if isinstance(schema_expectation, str):
+        return schema_expectation
+
+    if isinstance(schema_expectation, (list, tuple, set)):
+        return " or ".join(str(schema_type) for schema_type in schema_expectation)
+
+    return str(schema_expectation)
+
+
 def _type_mismatch_row(
     path: str,
     schema_type: str,
@@ -673,7 +869,7 @@ def _group_homepage_product_variant_warnings(
     rows: List[Dict[str, Any]],
     detected_schemas: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    variant_schema_types = {"ProductGroup", "Product", "Offer"}
+    variant_schema_types = {"ProductGroup", "Product", "Offer", "AggregateOffer"}
     variant_warning_rows = [
         row
         for row in rows
@@ -798,7 +994,7 @@ def _is_product_variant_warning(row: Dict[str, Any]) -> bool:
     return (
         row["severity"] == "Warning"
         and ".hasVariant[" in row["schema_path"]
-        and row["schema_type"] in {"Product", "Offer", "Brand"}
+        and row["schema_type"] in {"Product", "Offer", "AggregateOffer", "Brand"}
     )
 
 
