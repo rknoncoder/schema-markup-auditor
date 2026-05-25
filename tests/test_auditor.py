@@ -13,6 +13,7 @@ from core.validator import (
     audit_page_completeness,
     audit_schema,
     deep_audit,
+    MAJOR_STATUS_SCHEMA_TYPES,
 )
 from main import USER_AGENT, _infer_page_type, extract_storefront_node, run_audit
 
@@ -752,6 +753,11 @@ class SchemaStandardAuditTests(unittest.TestCase):
             "brand": "Snitch",
             "url": "https://example.com/products/shirt",
             "productID": "gid://shopify/Product/123",
+            "gtin": "0123456789012",
+            "gtin8": 12345678,
+            "gtin13": "1234567890123",
+            "gtin14": 12345678901234,
+            "mpn": "SHIRT-META-M",
             "category": "Shirts",
             "color": "Black",
             "material": "Cotton",
@@ -774,7 +780,19 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertFalse(
             any(
                 row["issue_type"] == "Unrecognized Property"
-                and row["property"] in {"productID", "category", "color", "material", "pattern", "size"}
+                and row["property"] in {
+                    "category",
+                    "color",
+                    "gtin",
+                    "gtin8",
+                    "gtin13",
+                    "gtin14",
+                    "material",
+                    "mpn",
+                    "pattern",
+                    "productID",
+                    "size",
+                }
                 for row in rows
             )
         )
@@ -816,6 +834,63 @@ class SchemaStandardAuditTests(unittest.TestCase):
             any(
                 row["schema_path"] == "$[0].offers"
                 and row["property"] == "highPrice"
+                for row in rows
+            )
+        )
+
+    def test_major_status_schema_types_include_core_master_schemas(self):
+        self.assertTrue(
+            {
+                "Article",
+                "BreadcrumbList",
+                "CollectionPage",
+                "LocalBusiness",
+                "Organization",
+                "Product",
+                "ProductGroup",
+                "WebSite",
+            }.issubset(MAJOR_STATUS_SCHEMA_TYPES)
+        )
+
+    def test_website_root_valid_row_stays_visible_with_search_action_child(self):
+        schemas = [
+            {
+                "@context": "https://schema.org",
+                "@type": "Organization",
+                "name": "ColourPop",
+                "url": "https://colourpop.com/",
+                "logo": "https://colourpop.com/logo.svg",
+                "sameAs": ["https://www.instagram.com/colourpopcosmetics/"],
+                "description": "Colour cosmetics brand.",
+            },
+            {
+                "@context": "https://schema.org",
+                "@type": "WebSite",
+                "name": "ColourPop",
+                "url": "https://colourpop.com/",
+                "potentialAction": {
+                    "@type": "SearchAction",
+                    "target": "https://colourpop.com/search?q={search_term_string}",
+                    "query-input": "required name=search_term_string",
+                },
+            },
+        ]
+
+        rows = audit_schema(schemas, page_type="homepage")
+
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[1]"
+                and row["schema_type"] == "WebSite"
+                and row["severity"] == "Valid"
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["schema_path"] == "$[1].potentialAction"
+                and row["schema_type"] == "SearchAction"
+                and row["severity"] == "Valid"
                 for row in rows
             )
         )

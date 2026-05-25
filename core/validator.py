@@ -197,6 +197,11 @@ SCHEMA_STANDARDS = {
             "brand": (str, dict),
             "url": str,
             "productID": str,
+            "gtin": (str, int, float),
+            "gtin8": (str, int, float),
+            "gtin13": (str, int, float),
+            "gtin14": (str, int, float),
+            "mpn": (str, int, float),
             "category": (str, list),
             "color": (str, list),
             "material": (str, list),
@@ -326,7 +331,16 @@ MISPLACED_PROPERTY_HINTS = {
 }
 
 
-MAJOR_STATUS_SCHEMA_TYPES = {"Product", "ProductGroup"}
+MAJOR_STATUS_SCHEMA_TYPES = {
+    "Article",
+    "BreadcrumbList",
+    "CollectionPage",
+    "LocalBusiness",
+    "Organization",
+    "Product",
+    "ProductGroup",
+    "WebSite",
+}
 
 
 def audit_schema(
