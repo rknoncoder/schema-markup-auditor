@@ -152,6 +152,7 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIn("Brand", SCHEMA_STANDARDS)
         self.assertIn("AggregateRating", SCHEMA_STANDARDS)
         self.assertIn("ImageObject", SCHEMA_STANDARDS)
+        self.assertIn("VideoObject", SCHEMA_STANDARDS)
         self.assertIn("ContactPoint", SCHEMA_STANDARDS)
         self.assertIn("SearchAction", SCHEMA_STANDARDS)
         self.assertIn("ReadAction", SCHEMA_STANDARDS)
@@ -176,6 +177,8 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertIs(SCHEMA_STANDARDS["Answer"]["types"]["text"], str)
         self.assertEqual(SCHEMA_STANDARDS["AggregateRating"]["types"]["ratingValue"], (str, int, float))
         self.assertIs(SCHEMA_STANDARDS["ImageObject"]["types"]["contentUrl"], str)
+        self.assertIs(SCHEMA_STANDARDS["VideoObject"]["types"]["uploadDate"], str)
+        self.assertEqual(SCHEMA_STANDARDS["VideoObject"]["types"]["thumbnailUrl"], (str, list))
         self.assertIs(SCHEMA_STANDARDS["ContactPoint"]["types"]["telephone"], str)
         self.assertEqual(SCHEMA_STANDARDS["SearchAction"]["types"]["target"], (str, dict))
         self.assertIs(SCHEMA_STANDARDS["WebPage"]["types"]["name"], str)
@@ -552,6 +555,60 @@ class SchemaStandardAuditTests(unittest.TestCase):
                 for row in missing_source_rows
             )
         )
+
+    def test_video_object_uses_google_video_rich_result_fields(self):
+        valid_schema = {
+            "@context": "https://schema.org",
+            "@type": "VideoObject",
+            "name": "Stay Jelly demo",
+            "description": "A product application video.",
+            "uploadDate": "2026-05-01",
+            "thumbnailUrl": [
+                "https://example.com/video-thumb.jpg",
+            ],
+            "contentUrl": "https://cdn.example.com/video.mp4",
+            "embedUrl": "https://example.com/embed/video",
+            "duration": "PT1M30S",
+        }
+        missing_required_schema = {
+            "@context": "https://schema.org",
+            "@type": "VideoObject",
+            "name": "Stay Jelly demo",
+            "description": "A product application video.",
+        }
+
+        valid_rows = deep_audit(valid_schema)
+        missing_required_rows = deep_audit(missing_required_schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in valid_rows))
+        self.assertEqual(valid_rows[0]["severity"], "Valid")
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "uploadDate"
+                for row in missing_required_rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row["severity"] == "Critical Error"
+                and row["property"] == "thumbnailUrl"
+                for row in missing_required_rows
+            )
+        )
+
+    def test_unknown_schema_type_passes_open_world_validation(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "SpeakableSpecification",
+            "cssSelector": [".headline", ".summary"],
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertEqual(rows[0]["schema_type"], "SpeakableSpecification")
+        self.assertEqual(rows[0]["severity"], "Valid")
+        self.assertFalse(any(row["issue_type"] == "Unsupported Schema Type" for row in rows))
 
     def test_collection_page_schema_requires_name(self):
         valid_schema = {

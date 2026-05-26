@@ -70,6 +70,20 @@ SCHEMA_STANDARDS = {
         },
         "nested": {},
     },
+    "VideoObject": {
+        "required": ["name", "description", "uploadDate", "thumbnailUrl"],
+        "recommended": ["contentUrl", "embedUrl", "duration"],
+        "types": {
+            "name": str,
+            "description": str,
+            "uploadDate": str,
+            "thumbnailUrl": (str, list),
+            "contentUrl": str,
+            "embedUrl": str,
+            "duration": str,
+        },
+        "nested": {},
+    },
     "ContactPoint": {
         "required": ["telephone", "contactType"],
         "recommended": ["areaServed", "availableLanguage", "email"],
@@ -546,19 +560,17 @@ def _audit_schema_item(
 
     standard = SCHEMA_STANDARDS.get(schema_type)
     if not standard:
-        self_rows.append(
-            _audit_row(
-                path=path,
-                schema_type=_display_schema_type(schema_type),
-                severity="Warning",
-                issue_type="Unsupported Schema Type",
-                field="@type",
-                expected=", ".join(SCHEMA_STANDARDS.keys()),
-                actual=_display_schema_type(schema_type),
-                message="No structural standard is configured for this schema type.",
-            )
+        nested_rows = _audit_nested_schemas(
+            schema_item=schema_item,
+            path=path,
+            context=context,
+            standard={"nested": {}},
         )
-        return graph_rows + self_rows
+        rows = graph_rows + self_rows
+        if not rows:
+            rows.append(_valid_schema_row(path, _display_schema_type(schema_type)))
+        rows.extend(nested_rows)
+        return rows
 
     self_rows.extend(_audit_properties(schema_item, path, schema_type, standard))
     nested_rows = _audit_nested_schemas(schema_item, path, context, standard)
