@@ -250,6 +250,84 @@ class SchemaStandardAuditTests(unittest.TestCase):
             )
         )
 
+    def test_yoast_style_global_mapping_properties_are_allowed(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "WebPage",
+            "name": "About us",
+            "description": "Agency about page.",
+            "url": "https://example.com/about",
+            "isPartOf": {
+                "@type": "WebSite",
+                "name": "Example",
+                "url": "https://example.com",
+                "potentialAction": {
+                    "@type": "SearchAction",
+                    "target": "https://example.com/search?q={search_term_string}",
+                    "query-input": "required name=search_term_string",
+                },
+            },
+            "publisher": {
+                "@type": "Organization",
+                "name": "Example",
+                "url": "https://example.com",
+                "logo": "https://example.com/logo.svg",
+                "sameAs": ["https://www.linkedin.com/company/example"],
+                "description": "Example organization.",
+            },
+            "inLanguage": "en-US",
+            "primaryImageOfPage": {
+                "@type": "ImageObject",
+                "url": "https://example.com/about.jpg",
+                "caption": "About Example",
+                "height": 800,
+                "width": 1200,
+            },
+            "thumbnailUrl": "https://example.com/about-thumb.jpg",
+            "datePublished": "2026-05-01",
+            "dateModified": "2026-05-27",
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(
+            any(
+                row["issue_type"] == "Unrecognized Property"
+                and row["property"] in {
+                    "dateModified",
+                    "datePublished",
+                    "inLanguage",
+                    "isPartOf",
+                    "primaryImageOfPage",
+                    "publisher",
+                    "thumbnailUrl",
+                }
+                for row in rows
+            )
+        )
+
+    def test_open_world_unknown_properties_pass_silently(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "WebPage",
+            "name": "Flexible schema page",
+            "description": "A page with future Schema.org and custom platform fields.",
+            "url": "https://example.com/flexible-schema",
+            "speakable": {
+                "@type": "SpeakableSpecification",
+                "cssSelector": [".headline", ".summary"],
+            },
+            "customShopifyField": {
+                "themeSection": "hero",
+                "enabled": True,
+            },
+            "futureSchemaOrgProperty": "Allowed by open-world validation.",
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertFalse(any(row["issue_type"] == "Unrecognized Property" for row in rows))
+
     def test_list_item_requires_position_and_item(self):
         valid_schema = {
             "@context": "https://schema.org",
@@ -275,6 +353,27 @@ class SchemaStandardAuditTests(unittest.TestCase):
                 for row in missing_item_rows
             )
         )
+
+    def test_list_item_accepts_numeric_string_position(self):
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "ListItem",
+            "position": "1",
+            "item": "https://example.com/services",
+            "name": "Services",
+        }
+
+        rows = deep_audit(schema)
+
+        self.assertEqual(schema["position"], 1)
+        self.assertFalse(
+            any(
+                row["issue_type"] == "Invalid Property Type"
+                and row["property"] == "position"
+                for row in rows
+            )
+        )
+        self.assertEqual(rows[0]["severity"], "Valid")
 
     def test_entry_point_requires_url_template(self):
         valid_schema = {
@@ -833,6 +932,8 @@ class SchemaStandardAuditTests(unittest.TestCase):
         self.assertTrue(
             any(
                 row["schema_path"] == "$[0].offers"
+                and row["severity"] == "Critical Error"
+                and row["issue_type"] == "Invalid Property Placement"
                 and row["property"] == "highPrice"
                 for row in rows
             )
@@ -1470,9 +1571,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()) as request_mock:
-                    with redirect_stdout(io.StringIO()):
-                        report_data = run_audit("example.com")
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()) as request_mock:
+                        with redirect_stdout(io.StringIO()):
+                            report_data = run_audit("example.com")
 
             report_path = Path(tmpdir) / "example.com_schema_audit.csv"
 
@@ -1518,9 +1620,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()) as request_mock:
-                    with redirect_stdout(io.StringIO()):
-                        report_data = run_audit(target_url)
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()) as request_mock:
+                        with redirect_stdout(io.StringIO()):
+                            report_data = run_audit(target_url)
 
             report_path = (
                 Path(tmpdir)
@@ -1565,9 +1668,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()):
-                    with redirect_stdout(io.StringIO()):
-                        report_data = run_audit("https://example.com/products/snitch-shirt")
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()):
+                        with redirect_stdout(io.StringIO()):
+                            report_data = run_audit("https://example.com/products/snitch-shirt")
 
             report_path = Path(tmpdir) / "example.com_products_snitch-shirt_schema_audit.csv"
             report_text = report_path.read_text(encoding="utf-8")
@@ -1603,9 +1707,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()):
-                    with redirect_stdout(io.StringIO()):
-                        run_audit("https://example.com/about")
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()):
+                        with redirect_stdout(io.StringIO()):
+                            run_audit("https://example.com/about")
 
             report_path = Path(tmpdir) / "example.com_about_schema_audit.csv"
             report_text = report_path.read_text(encoding="utf-8")
@@ -1709,9 +1814,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()):
-                    with redirect_stdout(io.StringIO()):
-                        report_data = run_audit("https://nobero.com/products/tee")
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()):
+                        with redirect_stdout(io.StringIO()):
+                            report_data = run_audit("https://nobero.com/products/tee")
 
         schema_types = set(report_data["schema_type"])
 
@@ -1777,9 +1883,10 @@ class OrchestrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("main.REPORTS_DIR", Path(tmpdir)):
-                with patch("main.requests.get", return_value=FakeResponse()):
-                    with redirect_stdout(io.StringIO()):
-                        report_data = run_audit("https://example.com/pages/trip-tee")
+                with patch("main.USE_HEADLESS_BROWSER", False):
+                    with patch("main.requests.get", return_value=FakeResponse()):
+                        with redirect_stdout(io.StringIO()):
+                            report_data = run_audit("https://example.com/pages/trip-tee")
 
         grouped_rows = report_data[
             report_data["issue_type"] == "Grouped Product Variant Warning"

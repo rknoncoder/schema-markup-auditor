@@ -75,8 +75,37 @@ class Crawler:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                page = browser.new_page(extra_http_headers=self.headers)
-                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                page = browser.new_page(
+                    extra_http_headers=self.headers,
+                    user_agent=self.headers["User-Agent"],
+                )
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                self._wait_for_rendered_schema_markup(page, timeout_ms)
                 return page.content()
             finally:
                 browser.close()
+
+    def _wait_for_rendered_schema_markup(self, page, timeout_ms: int) -> None:
+        """
+        Wait briefly for JavaScript-injected schema without requiring network idle.
+
+        Modern sites often keep analytics, personalization, or tracking requests
+        open long after useful DOM content has rendered. Waiting for
+        ``networkidle`` can therefore fail even when JSON-LD is already present.
+        """
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        short_wait_ms = min(5000, max(1000, timeout_ms // 6))
+
+        try:
+            page.wait_for_load_state("load", timeout=short_wait_ms)
+        except PlaywrightTimeoutError:
+            pass
+
+        try:
+            page.wait_for_selector(
+                'script[type*="ld+json"]',
+                timeout=short_wait_ms,
+            )
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(1000)

@@ -26,4 +26,4 @@ REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 
 # Enable headless browser mode (True for Playwright, False for simple requests)
-USE_HEADLESS_BROWSER = False
+USE_HEADLESS_BROWSER = True

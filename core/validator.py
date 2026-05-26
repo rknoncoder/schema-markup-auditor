@@ -323,6 +323,11 @@ PAGE_EXPECTATIONS = {
 
 
 MISPLACED_PROPERTY_HINTS = {
+    "Offer": {
+        "highPrice": "AggregateOffer",
+        "lowPrice": "AggregateOffer",
+        "offerCount": "AggregateOffer",
+    },
     "Product": {
         "highPrice": "AggregateOffer",
         "lowPrice": "AggregateOffer",
@@ -593,14 +598,17 @@ def _audit_properties(
                     message=f"Required property '{field}' is missing or empty.",
                 )
             )
-        elif field in field_types and not _matches_expected_type(schema_item[field], field_types[field]):
+        elif field in field_types:
+            value = _coerce_schema_value(schema_item, field, field_types[field])
+            if _matches_expected_type(value, field_types[field]):
+                continue
             rows.append(
                 _type_mismatch_row(
                     path=path,
                     schema_type=schema_type,
                     severity="Critical Error",
                     field=field,
-                    value=schema_item[field],
+                    value=value,
                     expected_type=field_types[field],
                 )
             )
@@ -626,14 +634,17 @@ def _audit_properties(
             continue
 
         for field in present_fields:
-            if field in field_types and not _matches_expected_type(schema_item[field], field_types[field]):
+            if field in field_types:
+                value = _coerce_schema_value(schema_item, field, field_types[field])
+                if _matches_expected_type(value, field_types[field]):
+                    continue
                 rows.append(
                     _type_mismatch_row(
                         path=path,
                         schema_type=schema_type,
                         severity="Critical Error",
                         field=field,
-                        value=schema_item[field],
+                        value=value,
                         expected_type=field_types[field],
                     )
                 )
@@ -652,92 +663,56 @@ def _audit_properties(
                     message=f"Recommended property '{field}' is missing or empty.",
                 )
             )
-        elif field in field_types and not _matches_expected_type(schema_item[field], field_types[field]):
+        elif field in field_types:
+            value = _coerce_schema_value(schema_item, field, field_types[field])
+            if _matches_expected_type(value, field_types[field]):
+                continue
             rows.append(
                 _type_mismatch_row(
                     path=path,
                     schema_type=schema_type,
                     severity="Warning",
                     field=field,
-                    value=schema_item[field],
+                    value=value,
                     expected_type=field_types[field],
                 )
             )
 
-    rows.extend(
-        _audit_unrecognized_properties(
-            schema_item=schema_item,
-            path=path,
-            schema_type=schema_type,
-            standard=standard,
-        )
-    )
+    rows.extend(_audit_blocked_properties(schema_item, path, schema_type))
 
     return rows
 
 
-def _audit_unrecognized_properties(
+def _audit_blocked_properties(
     schema_item: Dict[str, Any],
     path: str,
     schema_type: str,
-    standard: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    known_fields = _known_schema_fields(standard)
     misplaced_hints = MISPLACED_PROPERTY_HINTS.get(schema_type, {})
 
-    for field, value in schema_item.items():
-        if field.startswith("@") or field in known_fields:
+    for field in schema_item:
+        if field.startswith("@") or field not in misplaced_hints:
             continue
 
-        expected_owner = misplaced_hints.get(field)
-        if expected_owner:
-            rows.append(
-                _audit_row(
-                    path=path,
-                    schema_type=schema_type,
-                    severity="Critical Error",
-                    issue_type="Invalid Property Placement",
-                    field=field,
-                    expected=f"{expected_owner} property",
-                    actual=f"{schema_type} property",
-                    message=(
-                        f"Property '{field}' is not valid on {schema_type}; "
-                        f"move it under {expected_owner}."
-                    ),
-                )
-            )
-            continue
-
+        expected_owner = misplaced_hints[field]
         rows.append(
             _audit_row(
                 path=path,
                 schema_type=schema_type,
-                severity="Warning",
-                issue_type="Unrecognized Property",
+                severity="Critical Error",
+                issue_type="Invalid Property Placement",
                 field=field,
-                expected=f"Configured {schema_type} property",
-                actual=type(value).__name__,
+                expected=f"{expected_owner} property",
+                actual=f"{schema_type} property",
                 message=(
-                    f"Property '{field}' is not configured for {schema_type}; "
-                    "verify it belongs on this schema type or add it to SCHEMA_STANDARDS."
+                    f"Property '{field}' is not valid on {schema_type}; "
+                    f"move it under {expected_owner}."
                 ),
             )
         )
 
     return rows
-
-
-def _known_schema_fields(standard: Dict[str, Any]) -> set:
-    known_fields = set(standard.get("types", {}))
-    known_fields.update(standard.get("nested", {}))
-    known_fields.update(standard.get("required", []))
-    known_fields.update(standard.get("recommended", []))
-
-    for field_group in standard.get("required_any", []):
-        known_fields.update(field_group)
-
-    return known_fields
 
 
 def _audit_nested_schemas(
@@ -1166,6 +1141,42 @@ def _is_present(value: Any) -> bool:
     if isinstance(value, (list, dict)):
         return bool(value)
     return True
+
+
+def _coerce_schema_value(
+    schema_item: Dict[str, Any],
+    field: str,
+    expected_type: Any,
+) -> Any:
+    value = schema_item[field]
+    coerced_value, was_coerced = _coerce_value_for_expected_type(value, expected_type)
+
+    if was_coerced:
+        schema_item[field] = coerced_value
+        return coerced_value
+
+    return value
+
+
+def _coerce_value_for_expected_type(value: Any, expected_type: Any) -> Tuple[Any, bool]:
+    if isinstance(expected_type, tuple):
+        for type_option in expected_type:
+            coerced_value, was_coerced = _coerce_value_for_expected_type(
+                value,
+                type_option,
+            )
+            if was_coerced:
+                return coerced_value, True
+        return value, False
+
+    if expected_type is int and _is_int_like_string(value):
+        return int(value.strip()), True
+
+    return value, False
+
+
+def _is_int_like_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[+-]?\d+", value.strip()))
 
 
 def _matches_expected_type(value: Any, expected_type: Any) -> bool:
